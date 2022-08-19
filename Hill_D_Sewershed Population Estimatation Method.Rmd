@@ -1,0 +1,379 @@
+---
+title: "Sewershed population estimate methods"
+author: "Dustin Hill"
+date: "August 19, 2022"
+output: html_document
+---
+
+### Packages
+
+```{r packages, message=FALSE, warning = FALSE}
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(dplyr)
+library(readxl)
+library(stringi)
+library(readr)
+library(tidyr)
+library(tigris)
+library(tmap)
+library(rgdal)
+library(rgeos)
+library(raster)
+library(data.table)
+library(knitr)
+```
+
+```{r api key, include = FALSE}
+#census api for tidycensus
+# you will need an api key from tidycensus
+
+```
+
+### Methods
+
+To get estimates for 2018 and 2020 population by sewershed, we use 2010 block population values from the decennial census overlayed with the sewersheds and assign an apportioned value for each block partially in the sewershed.
+
+Then we obtain a population change estimate using 2018 American Community Survey (ACS) data at the block group level and 2010 ACS data. We do this because there are no recent block estimates for population and we want our values to be as accurate as possible. Comparison of block group to block estimates for sewersheds were roughly the same with between 75 and 80% of each other. We chose to use the population change value for the ACS data applied to the 2010 block data to keep our esimates as close to the granular block data as possible.
+
+Additional covariates for modelling are brought in as percentages of the total popualtion per sewershed using 2018 ACS block group data. The only variable being used from 2010 is the estimated percentage of the population living in nursing homes.
+
+Procedure steps
+
+1. Define objects for each function (county for sewersheds, block shapefile, block group shapefile, sewershed shapefile)
+
+2. Create functions for each step
+
+3. Create shapefile with 2010 block census data
+
+4. Change coordinate system of sewershed shapefile to match block shapefile
+
+5. Calculated sewershed values using dissolve and aggregation of overlayed shapefiles
+
+6. Merge population data to sewershed shapefile
+
+7. Create shapefile with 2010 and 2018 block group census data
+
+8. Repeat steps 4 - 6
+
+9. Save new sewershed file with population data
+
+### Functions
+
+These are the functions used for each step of the process which allow for repeating the procedure for each county in New York states. This method can be adapted to any state in the U.S.
+
+### Notes
+
+A Census API key is needed to use the "tidycensus" package.
+
+
+##### 2010 block data grab and analysis functions
+
+```{r }
+# block function
+data_grab_2010_Block_function <- function(x){
+  dataGrab_2010 <- get_decennial(geography = "block",
+                               state = "NY",
+                               county = county_sewer,
+                               year = 2010,
+                               
+                               variables = c(population = "H010001"),
+                               moe_level = 95)
+
+#no margin of error for decennial census
+wwCensus_2010 <- dataGrab_2010 %>% 
+  spread(variable, value) %>% 
+  distinct()
+
+wwCensus_2010$year <- rep(2010, nrow(wwCensus_2010))
+
+
+
+wwCensus_2010 <- wwCensus_2010 %>% 
+  dplyr::select(GEOID, year, population)
+censusGeo_block$GEOID <- censusGeo_block$GEOID10
+wwCensusGeo_block <- merge(censusGeo_block, wwCensus_2010, by = "GEOID")
+
+}
+```
+
+##### Census block dissolve and aggregate function
+
+```{r}
+census_dissolve_function <- function(wwCensusGeo_block, sewersheds){
+  #area for each block
+  wwCensusGeo_block$area_BG <- gArea(wwCensusGeo_block, byid = TRUE)
+  
+  #calculate area proportion in each sewershed
+  
+  Block_clip <- raster::intersect(wwCensusGeo_block, sewersheds)
+  #need to add slight buffer for intersection to work
+  wwCensusGeo_block <- gBuffer(wwCensusGeo_block, byid=TRUE, width=0)
+  sewersheds <- gBuffer(sewersheds, byid=TRUE, width=0)
+  #area for clipped blocks
+  Block_clip$area_clip <- gArea(Block_clip, byid = TRUE)
+  
+  #area proportion in each
+  Block_clip$area_prop <- Block_clip$area_clip / Block_clip$area_BG
+  Block_clip$population_2010_est <- Block_clip$area_prop * Block_clip$population
+  Block_dt <- as.data.table(Block_clip)
+  Block_dt_final <-
+    Block_dt %>%
+    group_by(Sewershed) %>%
+    summarise(population_block_2010 = sum(population_2010_est))
+  
+}
+
+```
+
+
+##### Data grab for 2010 and 2018 census block groups
+
+```{r}
+datagrab_BG_function <- function(x){
+  
+  dataGrab_2010 <- get_decennial(geography = "block group",
+                                 state = "NY",
+                                 county = county_sewer,
+                                 year = 2010,
+                                 
+                                 variables = c(population_BG_2010 = "H010001",
+                                               group_quartersPop = "P029026",
+                                               group_quartersNursing = "P042005"
+                                 ),
+                                 moe_level = 95)
+  
+  #no margin of error for decennial census
+  wwCensus_2010 <- dataGrab_2010 %>% 
+    spread(variable, value) %>% 
+    distinct()
+  
+
+  dataGrab_2018 <- get_acs(geography = "block group",
+                           state = "NY",
+                           county = county_sewer,
+                           variables = c(population_BG_2018 = "B01001_001",
+                                         housing_units = "B25001_001",
+                                         vacant_units = "B25002_003",
+                                         owner_occupied = "B25002_002",
+                                         Male_age_65_66 = "B01001_020",
+                                         Male_age_67_69 = "B01001_021",
+                                         Male_age_70_74 = "B01001_022",
+                                         Male_age_75_79 = "B01001_023",
+                                         Male_age_80_84 = "B01001_024",
+                                         Male_age_85_plus = "B01001_025",
+                                         F_age_65_66 = "B01001_044",
+                                         F_age_67_69 = "B01001_045",
+                                         F_age_70_74 = "B01001_046",
+                                         F_age_75_79 = "B01001_047",
+                                         F_age_80_84 = "B01001_048",
+                                         F_age_85_plus = "B01001_049",
+                                         black_alone = "B02001_003",
+                                         Amer_indian = "B02001_004",
+                                         Asian = "B02001_005",
+                                         Pacific_islander = "B02001_006",
+                                         Other_race = "B02001_007",
+                                         Two_or_more_races = "B02001_008",
+                                         hispanic_pop = "B03003_003",
+                                         median_house_value = "B25077_001",
+                                         Total_Education = "B15003_001",
+                                         overHS1 = "B15003_017",
+                                         overHS2 = "B15003_018",
+                                         overHS3 = "B15003_019",
+                                         overHS4 = "B15003_020",
+                                         overHS5 = "B15003_021",
+                                         overHS6 = "B15003_022",
+                                         overHS7 = "B15003_023",
+                                         overHS8 = "B15003_024",
+                                         overHS9 = "B15003_025"
+                                         ),
+                           year = 2018)
+  
+  wwCensus_2018 <- dataGrab_2018 %>% 
+    dplyr::select(-moe) %>% 
+    spread(variable, estimate) %>% 
+    distinct()
+  
+
+  wwCensus_2018 <- wwCensus_2018 %>% 
+    mutate(
+      Over64_Per = (Male_age_65_66 + Male_age_67_69 +Male_age_70_74 +
+                      Male_age_75_79 + Male_age_80_84 + Male_age_85_plus +
+                      F_age_65_66 + F_age_67_69 + F_age_70_74 +
+                      F_age_75_79 + F_age_80_84 + F_age_85_plus),
+      Nonwhite_Pop = (black_alone + Amer_indian + Asian + Pacific_islander + Other_race + Two_or_more_races),
+      Under_HS_tot = (overHS1 + overHS2 + overHS3 + overHS4 + overHS5 + overHS6 +
+                        overHS7 + overHS8 +overHS9))
+  
+  
+  wwCensus_2018 <- wwCensus_2018 %>% 
+    dplyr::select(GEOID, population_BG_2018, owner_occupied, Over64_Per, housing_units, vacant_units, black_alone, hispanic_pop, Nonwhite_Pop, Total_Education, Under_HS_tot)
+  wwCensus <- left_join(wwCensus_2010, wwCensus_2018, by = "GEOID")
+  #ratio which can be multiplied by 2010 value to determine the increase or decrease in population
+  
+  #
+  #merge to shapefile loaded earlier
+  wwCensusGeo_change <- merge(censusGeo_BG, wwCensus, by = "GEOID")
+  
+  }
+```
+
+
+##### Census block group dissolve and aggregate function
+
+```{r}
+census_BG_dissolve_function <- function(wwCensusBG_2010_2018, sewersheds){
+  #area for each block group
+  wwCensusBG_2010_2018$area_BG <- gArea(wwCensusBG_2010_2018, byid = TRUE)
+  
+  #calculate area proportion in each sewershed so can assign to the population change values to get estimate for population in each based on block group rather than block data
+  #need to add slight buffer for intersection to work
+  wwCensusBG_2010_2018 <- gBuffer(wwCensusBG_2010_2018, byid=TRUE, width=0)
+  sewersheds <- gBuffer(sewersheds, byid=TRUE, width=0)
+  BG_clip <- raster::intersect(wwCensusBG_2010_2018, sewersheds)
+  #area for clipped block groups
+  BG_clip$area_clip <- gArea(BG_clip, byid = TRUE)
+  
+  #area proportion in each
+  BG_clip$area_prop <- BG_clip$area_clip / BG_clip$area_BG
+  
+  #now multiply by the population values for 2010 and 2018
+  # block population data
+  #now multiply by the population values for 2010 
+  BG_clip_dt <- as.data.table(BG_clip)
+  BG_clip_dt <- BG_clip_dt[, 12:24 := lapply(.SD, '*', area_prop), .SDcols = 12:24][]
+  
+  #now dissolve to sewershed and compare to block values to get a margin of error
+  #but first change to sf object
+  BG.final <-
+    BG_clip_dt %>%
+    group_by(Sewershed) %>%
+    summarise(bg_pop_2010 = sum(population_BG_2010),
+              bg_pop_2018 = sum(population_BG_2018),
+              owner_occupied_2018 = sum(owner_occupied),
+              Over64_2018 = sum(Over64_Per),
+              housing_units_2018 = sum(housing_units),
+              vacant_units_2018 = sum(vacant_units),
+              group_quartersNursing_2010 = sum(group_quartersNursing),
+              group_quartersPop_2010 = sum(group_quartersPop),
+              black_alone_2018 = sum(black_alone),
+              hispanic_pop_2018 = sum(hispanic_pop),
+              Nonwhite_pop_2018 = sum(Nonwhite_Pop),
+              Total_Education_2018 = sum(Total_Education),
+              Under_HS_tot_2018 = sum(Under_HS_tot)
+              )
+  
+}
+```
+
+##### Test with Cayuga county and Auburn sewersheds
+
+```{r, warning = FALSE, eval = FALSE}
+### Step 1
+
+# define county where sewersheds are
+county_sewer <- "Cayuga"
+# census block shapefile
+censusGeo_block <- readOGR("~/Cayuga", "tl_2010_36011_tabblock10")
+
+##
+# note, you can use tigris to pull in county block shapefiles using the following code
+##
+
+censusGeo_block <- blocks("New York", county = county_sewer, cb = TRUE)
+
+# census block groups for shapefile download
+censusGeo_BG <- block_groups("New York", county = county_sewer, cb = TRUE)
+
+# sewershed shapefile
+sewersheds <- readOGR("~/Cayuga", "Auburn catchments old")
+
+#resave sewershed file to save old format
+#writeOGR(sewersheds, "~/Cayuga", "Auburn catchments old", "ESRI Shapefile", overwrite_layer=TRUE)
+
+### add id variables to sewershed file if missing
+sewersheds$City <- "Auburn"
+sewersheds$StateID <- "36"
+sewersheds$State <- "NY"
+sewersheds$CountyID <- "011"
+
+#add method if known
+sewersheds$Method <- ifelse(sewersheds$Site_ID == "CCWW1", "Influent", "")
+
+#change order of variables
+sewersheds <- sewersheds[c(10,11,12,1,9,6,3,7,2,8)]
+
+#create SW_ID
+sewersheds$SW_ID <- 
+  paste(sewersheds$StateID, sewersheds$CountyID, sewersheds$WWTP_ID, sewersheds$Site_ID,
+        sep = "")
+
+### Step 2
+##load functions (performed above)
+
+### Step 3 shapefile for 2010 block
+wwCensusGeo_block <- data_grab_2010_Block_function(county_sewer)
+
+### Step 4
+#change crs to match
+sewersheds <- spTransform(sewersheds, crs(wwCensusGeo_block))
+
+### Step 5 calculate sewershed pop values
+Block_dt_final <- census_dissolve_function(wwCensusGeo_block, sewersheds)
+
+### Step 6
+#merge into sewershed shapefile
+sewersheds2 <- merge(sewersheds, Block_dt_final, by = "Sewershed")
+
+
+### Step 7
+# pull BG data
+wwCensusBG_2010_2018 <- datagrab_BG_function(county_sewer)
+
+
+### Step 8
+#change crs of sewersheds
+sewersheds <- spTransform(sewersheds, crs(wwCensusBG_2010_2018))
+
+
+BG.final <- census_BG_dissolve_function(wwCensusBG_2010_2018, sewersheds)
+
+#change variables to percentage and obtain population change number
+# note for saving as esri shapefile, colnames need to be 10 or less characters
+BG.final$BG_pop_change <- BG.final$bg_pop_2018 / BG.final$bg_pop_2010
+BG.final$VacPer18 <- BG.final$vacant_units_2018 / BG.final$housing_units_2018
+BG.final$NursPer10 <- BG.final$group_quartersNursing_2010 / BG.final$group_quartersPop_2010
+BG.final$BlkPer18 <- BG.final$black_alone_2018 / BG.final$bg_pop_2018
+BG.final$HispPer18 <- BG.final$hispanic_pop_2018 / BG.final$bg_pop_2018
+BG.final$NWPer18 <- BG.final$Nonwhite_pop_2018 / BG.final$bg_pop_2018
+BG.final$EduPer18 <- 1- (BG.final$Under_HS_tot_2018)/BG.final$Total_Education_2018
+#average annual growth rate
+BG.final$GrwthRt <- (((BG.final$bg_pop_2018 - BG.final$bg_pop_2010)/BG.final$bg_pop_2010))/8
+#select final variables to merge to sewershed data
+BG.variables <- BG.final %>%
+  dplyr::select(Sewershed, BG_pop_change,housing_units_2018, VacPer18, NursPer10, BlkPer18,
+                HispPer18, NWPer18, EduPer18, GrwthRt)
+sewersheds3 <- merge(sewersheds2, BG.variables, by = "Sewershed")
+
+#calculate 2018 pop estimate using BG pop change and 2020 using growth rate
+sewersheds3$POP18 <- sewersheds3$population_block_2010 * sewersheds3$BG_pop_change
+sewersheds3$POP2020 <- sewersheds3$population_block_2010 * (1+sewersheds3$GrwthRt)^10
+#calculated 2020 population using one year change
+
+#round to nearest whole number pop and housing units
+sewersheds3$POP18 <- round(sewersheds3$POP18, 0)
+sewersheds3$POP2020 <- round(sewersheds3$POP2020, 0)
+sewersheds3$housing_units_2018 <- round(sewersheds3$housing_units_2018, 0)
+sewersheds3$population_block_2010 <- round(sewersheds3$population_block_2010, 0)
+
+#rename housing variable
+sewersheds3$HOUSING18 <- sewersheds3$housing_units_2018
+
+#remove columns we do not need
+sewersheds4 <- sewersheds3[c(2:9,1,10,11,15:24)]
+### Step 9
+#save file
+writeOGR(sewersheds4, "~/Cayuga", "catchments", "ESRI Shapefile", overwrite_layer=TRUE)
+
+```
