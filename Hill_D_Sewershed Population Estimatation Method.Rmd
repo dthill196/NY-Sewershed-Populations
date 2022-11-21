@@ -1,11 +1,190 @@
 ---
-title: "Sewershed population estimate methods"
+title: "New York State Sewershed population estimate methods"
+knit: (function(input_file, encoding) {
+    out_dir <- 'docs';
+    rmarkdown::render(input_file,
+      encoding=encoding,
+      output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 author: "Dustin Hill"
 date: "August 19, 2022"
 output: html_document
 ---
 
-### Packages
+### Description
+
+The New York State Sewersheds shapefile is a GIS layer that contains estimates for every municipal sewershed in New York States as of November 2022 with estimated populations higher than 100 persons. For data on sewersheds with fewer that 100 persons, please contact the author. Each sewershed is a georeferenced polygon for the estimated boundary of all parcels of land that are connected to the public wastewater treatment plant and the sewers flow into the common point, which is the treatment plant’s location. Please include the citation below when using these data.
+
+[**Link to full dataset**](https://www.arcgis.com/home/item.html?id=e795007660ae4a1fae5f86b40d065b3a "ArcGIS Online: New York State Sewersheds")
+
+**Citation**
+Hill, D.T. & Larsen, D.A. (2022). Using geographic information systems to link population estimates to wastewater surveillance data in New York State, USA. https://doi.org/10.1101/2022.08.23.22279124 
+
+
+# New York State Sewersheds {.tabset}
+
+## Map of sewersheds across NY
+
+
+```{r packages and data, warning = FALSE, echo=FALSE, message = FALSE, include = FALSE}
+
+# PACKAGES
+# Data manipulation
+library(dplyr)
+
+# Load and work with spatial data
+library(sf)
+
+# Leaflet packages
+library(leaflet)
+
+# LOAD SEWERSHED DATA
+ny_sewersheds <- st_read("data/New York State Sewersheds/New York State Sewersheds.shp")
+
+ny_counties <- st_read("E:/Dropbox/CEMI/Wastewater/Dashboard/DashboardProto_4/Dashboard_Data/Counties_Shoreline.shp")
+
+# wwtps only
+ny_sewersheds <- ny_sewersheds %>%
+  filter(Method == "Influent")
+
+# transform for leaflet to lat and long
+# NOTE projection must be longlat for leaflet
+ny_sewersheds <- st_transform(
+  ny_sewersheds,
+  crs = st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+)
+ny_counties <- st_transform(
+  ny_counties,
+  crs = st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+)
+
+# Add point data
+wwtp_df <- read.csv("E:/Dropbox/CEMI/Wastewater/Data/NY_WWTPs/NY_WWTP_DEC_List.csv",
+                    stringsAsFactors =  FALSE)
+
+# select municipal
+wwtp_mun_df <- wwtp_df %>% dplyr::filter(Plant.Type == "Municipal")
+
+
+# only the plants we have data for
+wwtp_mun_df <- wwtp_mun_df %>% filter(SPDES.Perm %in% ny_sewersheds$WWTP_ID) # 6 upstream polygons and a few missing points in the DEC list
+
+# Adding legends
+# flow above 1 million gallons per day
+wwtp_mun_df$flow_factor <- ifelse(wwtp_mun_df$Average.De >= 1, "> 1mgd", "< 1mgd")
+
+# Jitter the points
+wwtp_mun_df$Latitude <- jitter(wwtp_mun_df$Latitude, factor = 1)
+wwtp_mun_df$Longitude <- jitter(wwtp_mun_df$Longitude, factor = 1)
+
+# set up color factors to use for
+flow_pal <- colorFactor(c("dark blue", "cyan3"), 
+                        levels = c("> 1mgd", 
+                                   "< 1mgd"),
+                        # do not display nas
+                        na.color = NA
+                        )   
+```
+
+```{r leaflet map, warning=FALSE, echo = FALSE, message = FALSE,fig.width=12, fig.height=8}
+
+
+
+ny_sewer_map <-
+  leaflet()%>%
+  # Map panes are the arrangement of each geospatial layer. Lower zindexes correspond to lower layers
+  addMapPane("nymap", zIndex = 420) %>%
+  addMapPane("tiles", zIndex = 400) %>% #lowest z, first layer
+  addMapPane("catchment", zIndex = 422) %>%
+  #You can add base layers one or in combination. Combination layers need different opacity
+  addProviderTiles(providers$Stamen.TonerLite, #group = "Base map",
+                   pathOptions(pane = "tiles")) %>%
+  addProviderTiles(providers$Stamen.TonerLines, #group = "Base map",
+                   options = c(providerTileOptions(opacity = 0.35),
+                   options = pathOptions(pane = "tiles")))%>%
+  addProviderTiles(providers$Stamen.TonerLabels,#group = "Base map",
+                   pathOptions(pane = "tiles")) %>%
+
+  # add polygon data. Can be SF object or SP object
+  addPolygons(data = ny_sewersheds,
+              # simplifies polygons to help performance
+              smoothFactor = 0.2, 
+              fillOpacity = 0.7,
+              fillColor = ~"Orange",
+              stroke = TRUE,
+              color = "black",
+              weight = 1,
+              # pop up on hover
+              label = ny_sewersheds$Sewershed,
+              # You can group your data - important for setting up specific interaction calls
+              group = "Sewershed",
+              # what map pane does this layer corrspond to?
+              options = pathOptions(pane = "catchment", clickable = TRUE),
+              # you can highlight the polygon when you hover over it
+              highlightOptions = highlightOptions(color = "white", 
+                                                  weight = 2, # highlight line thickness
+                                                  bringToFront = TRUE),
+              # if you click the polygon, you can have a popup
+              popup = paste(ny_sewersheds$County, "County", "<br>",
+                            "Sewershed population: ", ny_sewersheds$POP2020, "<br>",
+                            "Creation method: ", ny_sewersheds$CRMETHOD)
+              ) %>%
+  addPolygons(data = ny_counties,
+              smoothFactor = 0.2, fillOpacity = 0.5,
+              stroke = TRUE,
+              fillColor = "Transparent",
+              color= "darkblue",
+              options = pathOptions(pane = "nymap", clickable = FALSE),
+              
+              weight = 4)%>%
+  # add map pane
+  addMapPane("wwtps", zIndex = 423) %>%
+  # can be sf object or table with latitude and longitude data
+  addCircleMarkers(data = wwtp_mun_df,  ~Longitude, ~Latitude,
+                   fillColor = ~flow_pal(wwtp_mun_df$flow_factor),
+                   fillOpacity = 0.9,
+                   opacity = 0.5,
+                   # popup - can add items using <br> from HTML code
+                   popup = paste("Facility:", (as.character(wwtp_mun_df$Facility.N)), "<br>",
+                                 "Permitted flow", wwtp_mun_df$Average.De
+                                 
+                   ),
+                   # change radius
+                   radius = ~ifelse(flow_factor == "< 1mgd", 6, 10),
+                   # hover label
+                   label = ~paste(as.character(Facility.N)),
+                   # layer IDs are essential for working with apps such as shiny, when you click the point/polygon, the ID is captured
+                   layerId = wwtp_mun_df$SPDES.Perm,
+                   options = pathOptions(pane = "wwtps"),
+                   group = "WWTPs"
+  ) %>%
+  # add legend
+  addLegend(data = wwtp_mun_df, 
+            # legend position
+            position = c("bottomleft"),
+            # color palette
+            pal = flow_pal,
+            # name of data for the legend (same as above for the cirle markers)
+            values = ~flow_factor,
+            opacity = 0.7,
+            title = ("Average flow"),
+            group = "WWTP",
+            layerId = "legend_wastewater"
+  ) %>%
+  # Layers control
+  addLayersControl(
+    # use group names to populate the layer control
+    overlayGroups = c("WWTPs", "Sewershed"),
+    options = layersControlOptions(collapsed = FALSE),
+    position = c("bottomleft")
+  )
+
+# view the map
+ny_sewer_map
+```
+
+
+## Population estimation code
+**Packages**
 
 ```{r packages, message=FALSE, warning = FALSE}
 library(tidyverse)
@@ -31,7 +210,7 @@ library(knitr)
 
 ```
 
-### Methods
+**Methods**
 
 To get estimates for 2018 and 2020 population by sewershed, we use 2010 block population values from the decennial census overlayed with the sewersheds and assign an apportioned value for each block partially in the sewershed.
 
@@ -39,7 +218,7 @@ Then we obtain a population change estimate using 2018 American Community Survey
 
 Additional covariates for modelling are brought in as percentages of the total popualtion per sewershed using 2018 ACS block group data. The only variable being used from 2010 is the estimated percentage of the population living in nursing homes.
 
-Procedure steps
+*Procedure steps*
 
 1. Define objects for each function (county for sewersheds, block shapefile, block group shapefile, sewershed shapefile)
 
@@ -59,16 +238,16 @@ Procedure steps
 
 9. Save new sewershed file with population data
 
-### Functions
+**Functions**
 
 These are the functions used for each step of the process which allow for repeating the procedure for each county in New York states. This method can be adapted to any state in the U.S.
 
-### Notes
+**Notes**
 
 A Census API key is needed to use the "tidycensus" package.
 
 
-##### 2010 block data grab and analysis functions
+**2010 block data grab and analysis functions**
 
 ```{r }
 # block function
@@ -98,7 +277,7 @@ wwCensusGeo_block <- merge(censusGeo_block, wwCensus_2010, by = "GEOID")
 }
 ```
 
-##### Census block dissolve and aggregate function
+**Census block dissolve and aggregate function**
 
 ```{r}
 census_dissolve_function <- function(wwCensusGeo_block, sewersheds){
@@ -128,7 +307,7 @@ census_dissolve_function <- function(wwCensusGeo_block, sewersheds){
 ```
 
 
-##### Data grab for 2010 and 2018 census block groups
+**Data grab for 2010 and 2018 census block groups**
 
 ```{r}
 datagrab_BG_function <- function(x){
@@ -220,7 +399,7 @@ datagrab_BG_function <- function(x){
 ```
 
 
-##### Census block group dissolve and aggregate function
+**Census block group dissolve and aggregate function**
 
 ```{r}
 census_BG_dissolve_function <- function(wwCensusBG_2010_2018, sewersheds){
@@ -267,7 +446,7 @@ census_BG_dissolve_function <- function(wwCensusBG_2010_2018, sewersheds){
 }
 ```
 
-##### Test with Cayuga county and Auburn sewersheds
+**Test with Cayuga county sewersheds**
 
 ```{r, warning = FALSE, eval = FALSE}
 ### Step 1
@@ -377,3 +556,4 @@ sewersheds4 <- sewersheds3[c(2:9,1,10,11,15:24)]
 writeOGR(sewersheds4, "~/Cayuga", "catchments", "ESRI Shapefile", overwrite_layer=TRUE)
 
 ```
+
