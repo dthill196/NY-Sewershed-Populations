@@ -5,8 +5,8 @@ knit: (function(input_file, encoding) {
     rmarkdown::render(input_file,
       encoding=encoding,
       output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
-author: "Dustin Hill"
-date: "August 19, 2022"
+author: "Dustin Hill and David Larsen"
+date:  "`r format(Sys.time(), '%B %d,  %Y')`"
 output: html_document
 ---
 
@@ -17,7 +17,8 @@ The New York State Sewersheds shapefile is a GIS layer that contains estimates f
 [**Link to full dataset**](https://www.arcgis.com/home/item.html?id=e795007660ae4a1fae5f86b40d065b3a "ArcGIS Online: New York State Sewersheds")
 
 **Citation**
-Hill, D.T. & Larsen, D.A. (2022). Using geographic information systems to link population estimates to wastewater surveillance data in New York State, USA. https://doi.org/10.1101/2022.08.23.22279124 
+
+Hill DT, Larsen DA (2023) Using geographic information systems to link population estimates to wastewater surveillance data in New York State, USA. PLOS Glob Public Health 3(1): e0001062. https://doi.org/10.1371/journal.pgph.0001062
 
 
 # New York State Sewersheds {.tabset}
@@ -52,6 +53,12 @@ ny_sewersheds <- st_transform(
   ny_sewersheds,
   crs = st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
 )
+
+# simplify
+library(rmapshaper)
+ny_sewersheds_simpl2 <- ms_simplify(ny_sewersheds, keep = 0.05,
+                                keep_shapes = FALSE)
+
 ny_counties <- st_transform(
   ny_counties,
   crs = st_crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
@@ -105,7 +112,7 @@ ny_sewer_map <-
                    pathOptions(pane = "tiles")) %>%
 
   # add polygon data. Can be SF object or SP object
-  addPolygons(data = ny_sewersheds,
+  addPolygons(data = ny_sewersheds_simpl2,
               # simplifies polygons to help performance
               smoothFactor = 0.2, 
               fillOpacity = 0.7,
@@ -197,10 +204,8 @@ library(readr)
 library(tidyr)
 library(tigris)
 library(tmap)
-library(rgdal)
-library(rgeos)
-library(raster)
 library(data.table)
+library(stringr)
 library(knitr)
 ```
 
@@ -253,45 +258,46 @@ A Census API key is needed to use the "tidycensus" package.
 # block function
 data_grab_2010_Block_function <- function(x){
   dataGrab_2010 <- get_decennial(geography = "block",
-                               state = "NY",
-                               county = county_sewer,
-                               year = 2010,
-                               
-                               variables = c(population = "H010001"),
-                               moe_level = 95)
-
-#no margin of error for decennial census
-wwCensus_2010 <- dataGrab_2010 %>% 
-  spread(variable, value) %>% 
-  distinct()
-
-wwCensus_2010$year <- rep(2010, nrow(wwCensus_2010))
-
-
-
-wwCensus_2010 <- wwCensus_2010 %>% 
-  dplyr::select(GEOID, year, population)
-censusGeo_block$GEOID <- censusGeo_block$GEOID10
-wwCensusGeo_block <- merge(censusGeo_block, wwCensus_2010, by = "GEOID")
-
+                                 state = "NY",
+                                 county = county_sewer,
+                                 year = 2010,
+                                 
+                                 variables = c(population = "H010001"),
+                                 moe_level = 95)
+  
+  #no margin of error for decennial census
+  wwCensus_2010 <- dataGrab_2010 %>% 
+    spread(variable, value) %>% 
+    distinct()
+  
+  wwCensus_2010$year <- rep(2010, nrow(wwCensus_2010))
+  
+  
+  
+  wwCensus_2010 <- wwCensus_2010 %>% 
+    dplyr::select(GEOID, year, population)
+  censusGeo_block$GEOID <- censusGeo_block$GEOID10
+  wwCensusGeo_block <- merge(censusGeo_block, wwCensus_2010, by = "GEOID")
+  
 }
 ```
 
 **Census block dissolve and aggregate function**
 
 ```{r}
+#function calculate area for each block, intersect, and calculate new area then dissolve
 census_dissolve_function <- function(wwCensusGeo_block, sewersheds){
   #area for each block
-  wwCensusGeo_block$area_BG <- gArea(wwCensusGeo_block, byid = TRUE)
+  wwCensusGeo_block$area_BG <- st_area(wwCensusGeo_block)
   
   #calculate area proportion in each sewershed
   
-  Block_clip <- raster::intersect(wwCensusGeo_block, sewersheds)
   #need to add slight buffer for intersection to work
-  wwCensusGeo_block <- gBuffer(wwCensusGeo_block, byid=TRUE, width=0)
-  sewersheds <- gBuffer(sewersheds, byid=TRUE, width=0)
+  wwCensusGeo_block <- st_buffer(wwCensusGeo_block, dist=0)
+  sewersheds <- st_buffer(sewersheds, dist = 0)
+  Block_clip <- st_intersection(wwCensusGeo_block, sewersheds)
   #area for clipped blocks
-  Block_clip$area_clip <- gArea(Block_clip, byid = TRUE)
+  Block_clip$area_clip <- st_area(Block_clip)
   
   #area proportion in each
   Block_clip$area_prop <- Block_clip$area_clip / Block_clip$area_BG
@@ -328,7 +334,7 @@ datagrab_BG_function <- function(x){
     spread(variable, value) %>% 
     distinct()
   
-
+  
   dataGrab_2018 <- get_acs(geography = "block group",
                            state = "NY",
                            county = county_sewer,
@@ -366,7 +372,7 @@ datagrab_BG_function <- function(x){
                                          overHS7 = "B15003_023",
                                          overHS8 = "B15003_024",
                                          overHS9 = "B15003_025"
-                                         ),
+                           ),
                            year = 2018)
   
   wwCensus_2018 <- dataGrab_2018 %>% 
@@ -374,7 +380,7 @@ datagrab_BG_function <- function(x){
     spread(variable, estimate) %>% 
     distinct()
   
-
+  
   wwCensus_2018 <- wwCensus_2018 %>% 
     mutate(
       Over64_Per = (Male_age_65_66 + Male_age_67_69 +Male_age_70_74 +
@@ -395,7 +401,8 @@ datagrab_BG_function <- function(x){
   #merge to shapefile loaded earlier
   wwCensusGeo_change <- merge(censusGeo_BG, wwCensus, by = "GEOID")
   
-  }
+}
+
 ```
 
 
@@ -404,15 +411,14 @@ datagrab_BG_function <- function(x){
 ```{r}
 census_BG_dissolve_function <- function(wwCensusBG_2010_2018, sewersheds){
   #area for each block group
-  wwCensusBG_2010_2018$area_BG <- gArea(wwCensusBG_2010_2018, byid = TRUE)
+  wwCensusBG_2010_2018$area_BG <- st_area(wwCensusBG_2010_2018)
   
   #calculate area proportion in each sewershed so can assign to the population change values to get estimate for population in each based on block group rather than block data
-  #need to add slight buffer for intersection to work
-  wwCensusBG_2010_2018 <- gBuffer(wwCensusBG_2010_2018, byid=TRUE, width=0)
-  sewersheds <- gBuffer(sewersheds, byid=TRUE, width=0)
-  BG_clip <- raster::intersect(wwCensusBG_2010_2018, sewersheds)
+  wwCensusBG_2010_2018 <- st_buffer(wwCensusBG_2010_2018, dist=0)
+  sewersheds <- st_buffer(sewersheds, dist=0)
+  BG_clip <- st_intersection(wwCensusBG_2010_2018, sewersheds)
   #area for clipped block groups
-  BG_clip$area_clip <- gArea(BG_clip, byid = TRUE)
+  BG_clip$area_clip <- st_area(BG_clip)
   
   #area proportion in each
   BG_clip$area_prop <- BG_clip$area_clip / BG_clip$area_BG
@@ -441,54 +447,39 @@ census_BG_dissolve_function <- function(wwCensusBG_2010_2018, sewersheds){
               Nonwhite_pop_2018 = sum(Nonwhite_Pop),
               Total_Education_2018 = sum(Total_Education),
               Under_HS_tot_2018 = sum(Under_HS_tot)
-              )
+    )
   
 }
+
 ```
 
 **Test with Cayuga county sewersheds**
 
 ```{r, warning = FALSE, eval = FALSE}
+
 ### Step 1
+# sewershed shapefile
+sewersheds <- st_read("data/Cayuga catchments/Cayuga catchments.shp")
+
+# how many counties to download?
+table(sewersheds$OTH_COUNT) # table of extent 0, only one county (cayuga)
 
 # define county where sewersheds are
-county_sewer <- "Cayuga"
+county_sewer <- c("Cayuga")
+
 # census block shapefile
-censusGeo_block <- readOGR("~/Cayuga", "tl_2010_36011_tabblock10")
-
-##
-# note, you can use tigris to pull in county block shapefiles using the following code
-##
-
-censusGeo_block <- blocks("New York", county = county_sewer, cb = TRUE)
+censusGeo_block <- st_read("E:/Data/Census/County_blocks/Cayuga/tl_2010_36011_tabblock10.shp")
+#censusGeo_block <- blocks("New York", county = county_sewer)
 
 # census block groups for shapefile download
-censusGeo_BG <- block_groups("New York", county = county_sewer, cb = TRUE)
-
-# sewershed shapefile
-sewersheds <- readOGR("~/Cayuga", "Auburn catchments old")
-
-#resave sewershed file to save old format
-#writeOGR(sewersheds, "~/Cayuga", "Auburn catchments old", "ESRI Shapefile", overwrite_layer=TRUE)
-
-### add id variables to sewershed file if missing
-sewersheds$City <- "Auburn"
-sewersheds$StateID <- "36"
-sewersheds$State <- "NY"
-sewersheds$CountyID <- "011"
-
-#add method if known
-sewersheds$Method <- ifelse(sewersheds$Site_ID == "CCWW1", "Influent", "")
-
-#change order of variables
-sewersheds <- sewersheds[c(10,11,12,1,9,6,3,7,2,8)]
+censusGeo_BG <- block_groups("New York", county = county_sewer, cb = TRUE, year = 2018)
 
 #create SW_ID
 sewersheds$SW_ID <- 
   paste(sewersheds$StateID, sewersheds$CountyID, sewersheds$WWTP_ID, sewersheds$Site_ID,
         sep = "")
-
 ### Step 2
+
 ##load functions (performed above)
 
 ### Step 3 shapefile for 2010 block
@@ -496,26 +487,32 @@ wwCensusGeo_block <- data_grab_2010_Block_function(county_sewer)
 
 ### Step 4
 #change crs to match
-sewersheds <- spTransform(sewersheds, crs(wwCensusGeo_block))
+# drop old variables sewersheds
+
+sewersheds <- st_transform(sewersheds, st_crs(wwCensusGeo_block))
+
+# turn off spherical geometry
+sf::sf_use_s2(FALSE)
 
 ### Step 5 calculate sewershed pop values
 Block_dt_final <- census_dissolve_function(wwCensusGeo_block, sewersheds)
 
 ### Step 6
 #merge into sewershed shapefile
+# drop old variables sewersheds
+names(sewersheds)
+sewersheds <- sewersheds[c(1:11,22:24)]
 sewersheds2 <- merge(sewersheds, Block_dt_final, by = "Sewershed")
-
 
 ### Step 7
 # pull BG data
 wwCensusBG_2010_2018 <- datagrab_BG_function(county_sewer)
 
-
 ### Step 8
 #change crs of sewersheds
-sewersheds <- spTransform(sewersheds, crs(wwCensusBG_2010_2018))
+sewersheds <- st_transform(sewersheds, st_crs(wwCensusBG_2010_2018))
 
-
+# run final function
 BG.final <- census_BG_dissolve_function(wwCensusBG_2010_2018, sewersheds)
 
 #change variables to percentage and obtain population change number
@@ -526,18 +523,21 @@ BG.final$NursPer10 <- BG.final$group_quartersNursing_2010 / BG.final$group_quart
 BG.final$BlkPer18 <- BG.final$black_alone_2018 / BG.final$bg_pop_2018
 BG.final$HispPer18 <- BG.final$hispanic_pop_2018 / BG.final$bg_pop_2018
 BG.final$NWPer18 <- BG.final$Nonwhite_pop_2018 / BG.final$bg_pop_2018
-BG.final$EduPer18 <- 1- (BG.final$Under_HS_tot_2018)/BG.final$Total_Education_2018
+BG.final$EduPer18 <- 1- (units::drop_units(BG.final$Under_HS_tot_2018))/units::drop_units(BG.final$Total_Education_2018)
+
 #average annual growth rate
 BG.final$GrwthRt <- (((BG.final$bg_pop_2018 - BG.final$bg_pop_2010)/BG.final$bg_pop_2010))/8
 #select final variables to merge to sewershed data
 BG.variables <- BG.final %>%
   dplyr::select(Sewershed, BG_pop_change,housing_units_2018, VacPer18, NursPer10, BlkPer18,
                 HispPer18, NWPer18, EduPer18, GrwthRt)
+
+
 sewersheds3 <- merge(sewersheds2, BG.variables, by = "Sewershed")
 
 #calculate 2018 pop estimate using BG pop change and 2020 using growth rate
 sewersheds3$POP18 <- sewersheds3$population_block_2010 * sewersheds3$BG_pop_change
-sewersheds3$POP2020 <- sewersheds3$population_block_2010 * (1+sewersheds3$GrwthRt)^10
+sewersheds3$POP2020 <- units::drop_units(sewersheds3$population_block_2010) * (1+ units::drop_units(sewersheds3$GrwthRt))^10
 #calculated 2020 population using one year change
 
 #round to nearest whole number pop and housing units
@@ -548,12 +548,22 @@ sewersheds3$population_block_2010 <- round(sewersheds3$population_block_2010, 0)
 
 #rename housing variable
 sewersheds3$HOUSING18 <- sewersheds3$housing_units_2018
+names(sewersheds3)
 
 #remove columns we do not need
-sewersheds4 <- sewersheds3[c(2:9,1,10,11,15:24)]
+sewersheds4 <- sewersheds3[c(2:9,1,10:14,18:25)]
+names(sewersheds4)
+summary(sewersheds4$POP2020)
 ### Step 9
 #save file
-writeOGR(sewersheds4, "~/Cayuga", "catchments", "ESRI Shapefile", overwrite_layer=TRUE)
+st_write(sewersheds4, "data/Cayuga catchments/Cayuga catchments.shp", append=FALSE)
+
+#load to be sure saved properly
+Cayuga <- st_read("data/Cayuga catchments/Cayuga catchments.shp")
+
+ggplot()+
+  geom_sf(data = Cayuga)
+
 
 ```
 
