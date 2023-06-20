@@ -23,20 +23,15 @@ library(readr)
 library(tidyr)
 library(tigris)
 library(tmap)
-library(rgdal)
-library(rgeos)
-library(raster)
 library(data.table)
 library(stringr)
 
 
 #api key for tidy census
 # you will need an API key for using tidycensus
+census_api_key(Sys.getenv('CENSUS_API_KEY'))
 
 #ACS18 <- load_variables(2010, "decennial", cache = TRUE) # find variables table numbers
-
-# set wd
-setwd("E:/")
 
 # block function
 data_grab_2010_Block_function <- function(x){
@@ -67,16 +62,16 @@ data_grab_2010_Block_function <- function(x){
 #function calculate area for each block, intersect, and calculate new area then dissolve
 census_dissolve_function <- function(wwCensusGeo_block, sewersheds){
   #area for each block
-  wwCensusGeo_block$area_BG <- gArea(wwCensusGeo_block, byid = TRUE)
+  wwCensusGeo_block$area_BG <- st_area(wwCensusGeo_block)
   
   #calculate area proportion in each sewershed
   
   #need to add slight buffer for intersection to work
-  wwCensusGeo_block <- gBuffer(wwCensusGeo_block, byid=TRUE, width=0)
-  sewersheds <- gBuffer(sewersheds, byid=TRUE, width=0)
-  Block_clip <- raster::intersect(wwCensusGeo_block, sewersheds)
+  wwCensusGeo_block <- st_buffer(wwCensusGeo_block, dist=0)
+  sewersheds <- st_buffer(sewersheds, dist = 0)
+  Block_clip <- st_intersection(wwCensusGeo_block, sewersheds)
   #area for clipped blocks
-  Block_clip$area_clip <- gArea(Block_clip, byid = TRUE)
+  Block_clip$area_clip <- st_area(Block_clip)
   
   #area proportion in each
   Block_clip$area_prop <- Block_clip$area_clip / Block_clip$area_BG
@@ -179,14 +174,14 @@ datagrab_BG_function <- function(x){
 
 census_BG_dissolve_function <- function(wwCensusBG_2010_2018, sewersheds){
   #area for each block group
-  wwCensusBG_2010_2018$area_BG <- gArea(wwCensusBG_2010_2018, byid = TRUE)
+  wwCensusBG_2010_2018$area_BG <- st_area(wwCensusBG_2010_2018)
   
   #calculate area proportion in each sewershed so can assign to the population change values to get estimate for population in each based on block group rather than block data
-  wwCensusBG_2010_2018 <- gBuffer(wwCensusBG_2010_2018, byid=TRUE, width=0)
-  sewersheds <- gBuffer(sewersheds, byid=TRUE, width=0)
-  BG_clip <- raster::intersect(wwCensusBG_2010_2018, sewersheds)
+  wwCensusBG_2010_2018 <- st_buffer(wwCensusBG_2010_2018, dist=0)
+  sewersheds <- st_buffer(sewersheds, dist=0)
+  BG_clip <- st_intersection(wwCensusBG_2010_2018, sewersheds)
   #area for clipped block groups
-  BG_clip$area_clip <- gArea(BG_clip, byid = TRUE)
+  BG_clip$area_clip <- st_area(BG_clip)
   
   #area proportion in each
   BG_clip$area_prop <- BG_clip$area_clip / BG_clip$area_BG
