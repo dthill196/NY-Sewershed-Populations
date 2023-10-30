@@ -8,6 +8,8 @@ knit: (function(input_file, encoding) {
 author: "Dustin Hill and David Larsen"
 date:  "`r format(Sys.time(), '%B %d,  %Y')`"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 ### Description
@@ -94,7 +96,7 @@ flow_pal <- colorFactor(c("dark blue", "cyan3"),
 
 ```{r leaflet map, warning=FALSE, echo = FALSE, message = FALSE,fig.width=12, fig.height=8}
 
-
+library(leaflet.extras)
 
 ny_sewer_map <-
   leaflet()%>%
@@ -103,13 +105,11 @@ ny_sewer_map <-
   addMapPane("tiles", zIndex = 400) %>% #lowest z, first layer
   addMapPane("catchment", zIndex = 422) %>%
   #You can add base layers one or in combination. Combination layers need different opacity
-  addProviderTiles(providers$Stamen.TonerLite, #group = "Base map",
-                   pathOptions(pane = "tiles")) %>%
-  addProviderTiles(providers$Stamen.TonerLines, #group = "Base map",
-                   options = c(providerTileOptions(opacity = 0.35),
-                   options = pathOptions(pane = "tiles")))%>%
-  addProviderTiles(providers$Stamen.TonerLabels,#group = "Base map",
-                   pathOptions(pane = "tiles")) %>%
+      # addTiles(
+      #                options = pathOptions(pane = "tiles")) %>%
+  # addProviderTiles(providers$CartoDB.Positron,
+  #                  options = pathOptions(pane = "tiles")) %>%
+  addTiles(urlTemplate = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png') %>%
 
   # add polygon data. Can be SF object or SP object
   addPolygons(data = ny_sewersheds_simpl2,
@@ -566,4 +566,3 @@ ggplot()+
 
 
 ```
-
